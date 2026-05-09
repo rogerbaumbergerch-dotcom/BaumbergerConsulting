@@ -1,136 +1,93 @@
 name: Deploy to AWS
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
-      - develop
-  pull_request:
-    branches:
-      - main
+
+permissions:
+  id-token: write
+  contents: read
 
 env:
-  AWS_REGION: eu-central-1
   STACK_NAME: homepage-static
 
 jobs:
-  build-and-deploy:
+  deploy:
     runs-on: ubuntu-latest
-    permissions:
-      id-token: write
-      contents: read
 
     steps:
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Node.js
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
           cache: 'npm'
-          cache-dependency-path: 'frontend/package-lock.json'
+          cache-dependency-path: frontend/package-lock.json
 
-      - name: Install dependencies
+      - name: Install frontend dependencies
         working-directory: frontend
-        run: npm install
+        run: npm ci
 
       - name: Build frontend
         working-directory: frontend
         run: npm run build
 
-      - name: Validate AWS deploy role configuration
-        shell: bash
-        run: |
-          if [ -z "${AWS_DEPLOY_ROLE_ARN}" ]; then
-            echo "AWS_DEPLOY_ROLE_ARN is not set."
-            echo "Set repository variable 'AWS_DEPLOY_ROLE_ARN' (recommended) or repository secret 'AWS_DEPLOY_ROLE_ARN'."
-            exit 1
-          fi
-
-      - name: Show OIDC trust context
-        shell: bash
-        run: |
-          echo "Repository: ${GITHUB_REPOSITORY}"
-          echo "Ref: ${GITHUB_REF}"
-          echo "Expected OIDC sub claim: repo:${GITHUB_REPOSITORY}:ref:${GITHUB_REF}"
-
-      - name: Guard manual deploy branch
-        if: github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main'
-        shell: bash
-        run: |
-          echo "Manual deploy must run from refs/heads/main with current IAM trust policy."
-          echo "Current ref: ${GITHUB_REF}"
-          echo "Either run this workflow on main or update the IAM role trust policy sub condition."
-          exit 1
-
       - name: Configure AWS credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-region: ${{ env.AWS_REGION }}
-          role-to-assume: ${{ env.AWS_DEPLOY_ROLE_ARN }}
-          role-session-name: github-actions-offerten-deploy
+          aws-region: ${{ secrets.AWS_REGION }}
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          role-session-name: github-actions-homepage-deploy
 
       - name: Deploy CloudFormation stack
-        if: github.event_name == 'push'
         run: |
-          PARAMETER_OVERRIDES=""
-          if [[ -n "${{ secrets.DOMAIN_NAME }}" ]]; then
-            PARAMETER_OVERRIDES="DomainName=${{ secrets.DOMAIN_NAME }}"
-          fi
-          if [[ -n "${{ secrets.HOSTED_ZONE_ID }}" ]]; then
-            PARAMETER_OVERRIDES="$PARAMETER_OVERRIDES HostedZoneId=${{ secrets.HOSTED_ZONE_ID }}"
-          fi
-          if [[ -n "${{ secrets.ACM_CERTIFICATE_ARN }}" ]]; then
-            PARAMETER_OVERRIDES="$PARAMETER_OVERRIDES AcmCertificateArn=${{ secrets.ACM_CERTIFICATE_ARN }}"
-          fi
+          PARAMETER_OVERRIDES=()
+          [[ -n "${{ secrets.DOMAIN_NAME }}" ]] && PARAMETER_OVERRIDES+=("DomainName=${{ secrets.DOMAIN_NAME }}")
+          [[ -n "${{ secrets.HOSTED_ZONE_ID }}" ]] && PARAMETER_OVERRIDES+=("HostedZoneId=${{ secrets.HOSTED_ZONE_ID }}")
+          [[ -n "${{ secrets.ACM_CERTIFICATE_ARN }}" ]] && PARAMETER_OVERRIDES+=("AcmCertificateArn=${{ secrets.ACM_CERTIFICATE_ARN }}")
 
-          if [[ -z "$PARAMETER_OVERRIDES" ]]; then
-            aws cloudformation deploy \
-              --stack-name "$STACK_NAME" \
-              --template-file template.yaml \
-              --region "$AWS_REGION" \
-              --capabilities CAPABILITY_NAMED_IAM \
-              --no-fail-on-empty-changeset
-          else
-            aws cloudformation deploy \
-              --stack-name "$STACK_NAME" \
-              --template-file template.yaml \
-              --region "$AWS_REGION" \
-              --capabilities CAPABILITY_NAMED_IAM \
-              --parameter-overrides $PARAMETER_OVERRIDES \
-              --no-fail-on-empty-changeset
-          fi
+          ARGS=(
+            cloudformation deploy
+            --stack-name "$STACK_NAME"
+            --template-file template.yaml
+            --region "${{ secrets.AWS_REGION }}"
+            --capabilities CAPABILITY_NAMED_IAM
+            --no-fail-on-empty-changeset
+          )
+          [[ ${#PARAMETER_OVERRIDES[@]} -gt 0 ]] && ARGS+=(--parameter-overrides "${PARAMETER_OVERRIDES[@]}")
 
-      - name: Get CloudFormation outputs
-        if: github.event_name == 'push'
-        id: cf-outputs
+          aws "${ARGS[@]}"
+
+      - name: Get stack outputs
+        id: cf
         run: |
-          aws cloudformation describe-stacks \
+          OUTPUTS=$(aws cloudformation describe-stacks \
             --stack-name "$STACK_NAME" \
-            --region "$AWS_REGION" \
+            --region "${{ secrets.AWS_REGION }}" \
             --query "Stacks[0].Outputs" \
-            --output json > /tmp/outputs.json
-          BUCKET=$(jq -r '.[] | select(.OutputKey=="WebsiteBucketName") | .OutputValue' /tmp/outputs.json)
-          DISTRIBUTION=$(jq -r '.[] | select(.OutputKey=="CloudFrontDistributionId") | .OutputValue' /tmp/outputs.json)
-          echo "bucket=$BUCKET" >> $GITHUB_OUTPUT
-          echo "distribution=$DISTRIBUTION" >> $GITHUB_OUTPUT
+            --output json)
+          echo "bucket=$(echo "$OUTPUTS" | jq -r '.[] | select(.OutputKey=="WebsiteBucketName") | .OutputValue')" >> $GITHUB_OUTPUT
+          echo "distribution=$(echo "$OUTPUTS" | jq -r '.[] | select(.OutputKey=="CloudFrontDistributionId") | .OutputValue')" >> $GITHUB_OUTPUT
+          echo "url=$(echo "$OUTPUTS" | jq -r '.[] | select(.OutputKey=="SiteUrl") | .OutputValue')" >> $GITHUB_OUTPUT
 
-      - name: Sync to S3
-        if: github.event_name == 'push'
+      - name: Sync static files to S3
         run: |
-          aws s3 sync frontend/dist s3://${{ steps.cf-outputs.outputs.bucket }} --delete
+          aws s3 sync frontend/dist s3://${{ steps.cf.outputs.bucket }} \
+            --delete \
+            --exclude "index.html"
+          aws s3 cp frontend/dist/index.html s3://${{ steps.cf.outputs.bucket }}/index.html \
+            --cache-control "no-cache, no-store, must-revalidate" \
+            --content-type "text/html; charset=utf-8"
 
-      - name: Invalidate CloudFront
-        if: github.event_name == 'push'
+      - name: Invalidate CloudFront cache
         run: |
           aws cloudfront create-invalidation \
-            --distribution-id ${{ steps.cf-outputs.outputs.distribution }} \
-            --paths '/*'
+            --distribution-id ${{ steps.cf.outputs.distribution }} \
+            --paths "/*"
 
-      - name: Output deployment info
-        if: github.event_name == 'push'
-        run: |
-          echo "✅ Deployment complete"
-          echo "Bucket: ${{ steps.cf-outputs.outputs.bucket }}"
-          echo "Distribution: ${{ steps.cf-outputs.outputs.distribution }}"
+      - name: Summary
+        run: echo "Deployed to ${{ steps.cf.outputs.url }}"

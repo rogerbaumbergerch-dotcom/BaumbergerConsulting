@@ -68,8 +68,39 @@ jobs:
             --query "Stacks[0].StackStatus" \
             --output text 2>/dev/null || echo "NOT_FOUND")
 
+          # Deletes an orphaned OAC that was not cleaned up by a previous stack rollback or delete.
+          # Safe to call when the stack does not (or no longer) owns the OAC.
+          delete_orphaned_oac() {
+            local OAC_NAME="${STACK_NAME}-oac"
+            local OAC_ID
+            # The JMESPath expression `... | [0]` returns JSON null when no item matches,
+            # which --output text renders as the literal string 'None'. Both guards are needed.
+            OAC_ID=$(aws cloudfront list-origin-access-controls \
+              --query "OriginAccessControlList.Items[?Name=='$OAC_NAME'].Id | [0]" \
+              --output text 2>/dev/null || true)
+
+            if [[ -n "$OAC_ID" && "$OAC_ID" != "None" ]]; then
+              echo "Found orphaned OAC '$OAC_NAME' ($OAC_ID). Deleting..."
+              local ETAG
+              ETAG=$(aws cloudfront get-origin-access-control \
+                --id "$OAC_ID" \
+                --query "ETag" \
+                --output text)
+              if aws cloudfront delete-origin-access-control \
+                --id "$OAC_ID" \
+                --if-match "$ETAG"; then
+                echo "Deleted orphaned OAC '$OAC_NAME'."
+              else
+                echo "WARNING: Failed to delete orphaned OAC '$OAC_NAME' ($OAC_ID). The next CloudFormation deploy may fail with AlreadyExists."
+              fi
+            else
+              echo "No orphaned OAC '$OAC_NAME' found."
+            fi
+          }
+
           if [[ "$STATUS" == "NOT_FOUND" ]]; then
             echo "Stack does not exist. Creating a new one."
+            delete_orphaned_oac
             exit 0
           fi
 
@@ -98,6 +129,7 @@ jobs:
               --region "${{ secrets.AWS_REGION }}"
 
             echo "Stack deleted. Deployment will recreate it."
+            delete_orphaned_oac
           else
             echo "Stack is deployable. Continuing with in-place update."
           fi

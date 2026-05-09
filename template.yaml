@@ -1,20 +1,20 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: 'Static hosting for the homepage using S3, CloudFront, and an optional custom domain'
+Description: 'Static hosting with automatic Route 53 DNS management'
 
 Parameters:
   DomainName:
     Type: String
-    Default: ""
-    Description: "Your domain name (leave empty for CloudFront default)"
+    Default: "baum-berger.com"
+    Description: "Your domain name"
     
   HostedZoneId:
     Type: String
-    Default: ""
+    Default: "Z0611219TTZX7YDE3WFE"
     Description: "Route 53 Hosted Zone ID"
     
   AcmCertificateArn:
     Type: String
-    Default: ""
+    Default: "arn:aws:acm:us-east-1:980815102020:certificate/ff880a23-96c9-475e-8346-0121e84e2604"
     Description: "ACM Certificate ARN"
 
 Conditions:
@@ -61,7 +61,7 @@ Resources:
             Principal:
               Service: cloudfront.amazonaws.com
             Action: s3:GetObject
-            Resource: !Sub "${WebsiteBucket.Arn}/*"
+            Resource: !Sub "${WebsiteBucket}/*"
             Condition:
               StringEquals:
                 'AWS:SourceArn': !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${WebsiteDistribution}"
@@ -72,7 +72,7 @@ Resources:
       DistributionConfig:
         Comment: !Sub "${AWS::StackName} static website"
         DefaultRootObject: index.html
-        Enabled: true
+        Enabled: true  # Direkt enabled
         HttpVersion: http2and3
         IPV6Enabled: true
         PriceClass: PriceClass_100
@@ -120,6 +120,7 @@ Resources:
             ResponseCode: 200
             ResponsePagePath: /index.html
 
+  # AUTOMATISCHE Route 53 DNS Records
   Route53RecordA:
     Type: AWS::Route53::RecordSet
     Condition: HasDomain
@@ -161,3 +162,8 @@ Outputs:
   CloudFrontDomainName:
     Description: "CloudFront Distribution Domain Name"
     Value: !GetAtt WebsiteDistribution.DomainName
+
+  Route53RecordsUpdated:
+    Description: "Route 53 DNS Records Status"
+    Condition: HasDomain
+    Value: !Sub "DNS automatically updated for ${DomainName} and www.${DomainName}"

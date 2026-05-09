@@ -63,13 +63,13 @@ aws "${DEPLOY_ARGS[@]}"
 BUCKET_NAME="$(aws cloudformation describe-stacks \
   --stack-name "$STACK_NAME" \
   --region "$AWS_REGION" \
-  --query "Stacks[0].Outputs[?OutputKey=='WebsiteBucketName'].OutputValue" \
+  --query "Stacks[0].Outputs[?OutputKey=='FrontendBucketName'].OutputValue" \
   --output text)"
 
 DISTRIBUTION_ID="$(aws cloudformation describe-stacks \
   --stack-name "$STACK_NAME" \
   --region "$AWS_REGION" \
-  --query "Stacks[0].Outputs[?OutputKey=='CloudFrontDistributionId'].OutputValue" \
+  --query "Stacks[0].Outputs[?OutputKey=='FrontendDistributionId'].OutputValue" \
   --output text)"
 
 aws s3 sync "$FRONTEND_DIR/dist" "s3://$BUCKET_NAME" --delete

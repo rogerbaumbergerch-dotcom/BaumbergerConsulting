@@ -170,9 +170,9 @@ jobs:
             --region "${{ secrets.AWS_REGION }}" \
             --query "Stacks[0].Outputs" \
             --output json)
-          echo "bucket=$(echo "$OUTPUTS" | jq -r '.[] | select(.OutputKey=="WebsiteBucketName") | .OutputValue')" >> $GITHUB_OUTPUT
-          echo "distribution=$(echo "$OUTPUTS" | jq -r '.[] | select(.OutputKey=="CloudFrontDistributionId") | .OutputValue')" >> $GITHUB_OUTPUT
-          echo "url=$(echo "$OUTPUTS" | jq -r '.[] | select(.OutputKey=="SiteUrl") | .OutputValue')" >> $GITHUB_OUTPUT
+          echo "bucket=$(echo "$OUTPUTS" | jq -r '.[] | select(.OutputKey=="FrontendBucketName") | .OutputValue')" >> $GITHUB_OUTPUT
+          echo "distribution=$(echo "$OUTPUTS" | jq -r '.[] | select(.OutputKey=="FrontendDistributionId") | .OutputValue')" >> $GITHUB_OUTPUT
+          echo "url=$(echo "$OUTPUTS" | jq -r '.[] | select(.OutputKey=="FrontendUrl") | .OutputValue')" >> $GITHUB_OUTPUT
 
       - name: Sync static files to S3
         run: |

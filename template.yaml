@@ -1,42 +1,53 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Static hosting for the homepage using S3, CloudFront, and an optional custom domain.
+Description: 'Static hosting for the homepage using S3, CloudFront, and an optional custom domain'
 
 Parameters:
   DomainName:
     Type: String
-    Default: ''
-    Description: Optional custom domain name for the site. Leave empty to use the CloudFront domain.
-
+    Default: ""
+    Description: "Your domain name (leave empty for CloudFront default)"
+    
   HostedZoneId:
     Type: String
-    Default: ''
-    Description: Optional Route 53 hosted zone ID for the custom domain.
-
+    Default: ""
+    Description: "Route 53 Hosted Zone ID"
+    
   AcmCertificateArn:
     Type: String
-    Default: ''
-    Description: Optional ACM certificate ARN in us-east-1 for CloudFront.
+    Default: ""
+    Description: "ACM Certificate ARN"
 
 Conditions:
-  UseCustomDomain: !And
-    - !Not [!Equals [!Ref DomainName, '']]
-    - !Not [!Equals [!Ref HostedZoneId, '']]
-    - !Not [!Equals [!Ref AcmCertificateArn, '']]
+  HasDomain: !And
+    - !Not [!Equals [!Ref DomainName, ""]]
+    - !Not [!Equals [!Ref HostedZoneId, ""]]
+    - !Not [!Equals [!Ref AcmCertificateArn, ""]]
 
 Resources:
+  CloudFrontOriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "${AWS::StackName}-oac-${AWS::AccountId}"
+        Description: !Sub "OAC for ${AWS::StackName}"
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
   WebsiteBucket:
     Type: AWS::S3::Bucket
     Properties:
-      BucketName: !Sub '${AWS::StackName}-frontend-${AWS::AccountId}'
-      BucketEncryption:
-        ServerSideEncryptionConfiguration:
-          - ServerSideEncryptionByDefault:
-              SSEAlgorithm: AES256
+      BucketName: !Sub "${AWS::StackName}-website-${AWS::AccountId}"
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
         IgnorePublicAcls: true
         RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+    DeletionPolicy: Retain
 
   WebsiteBucketPolicy:
     Type: AWS::S3::BucketPolicy
@@ -45,58 +56,62 @@ Resources:
       PolicyDocument:
         Version: '2012-10-17'
         Statement:
-          - Sid: AllowCloudFrontReadAccess
+          - Sid: AllowCloudFrontServicePrincipal
             Effect: Allow
             Principal:
               Service: cloudfront.amazonaws.com
             Action: s3:GetObject
-            Resource: !Sub '${WebsiteBucket.Arn}/*'
+            Resource: !Sub "${WebsiteBucket.Arn}/*"
             Condition:
               StringEquals:
-                AWS:SourceArn: !Sub 'arn:aws:cloudfront::${AWS::AccountId}:distribution/${WebsiteDistribution}'
-
-  CloudFrontOriginAccessControl:
-    Type: AWS::CloudFront::OriginAccessControl
-    Properties:
-      OriginAccessControlConfig:
-        Description: Origin access control for the homepage bucket
-        OriginAccessControlOriginType: s3
-        SigningBehavior: always
-        SigningProtocol: sigv4
+                'AWS:SourceArn': !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${WebsiteDistribution}"
 
   WebsiteDistribution:
     Type: AWS::CloudFront::Distribution
     Properties:
       DistributionConfig:
-        Enabled: true
-        Comment: !Sub '${AWS::StackName} static site'
+        Comment: !Sub "${AWS::StackName} static website"
         DefaultRootObject: index.html
+        Enabled: true
         HttpVersion: http2and3
         IPV6Enabled: true
         PriceClass: PriceClass_100
+        
         Aliases: !If
-          - UseCustomDomain
-          - [!Ref DomainName]
-          - !Ref AWS::NoValue
+          - HasDomain
+          - - !Ref DomainName
+            - !Sub "www.${DomainName}"
+          - !Ref "AWS::NoValue"
+        
+        ViewerCertificate: !If
+          - HasDomain
+          - AcmCertificateArn: !Ref AcmCertificateArn
+            SslSupportMethod: sni-only
+            MinimumProtocolVersion: TLSv1.2_2021
+          - CloudFrontDefaultCertificate: true
+        
         Origins:
           - Id: WebsiteBucketOrigin
             DomainName: !GetAtt WebsiteBucket.RegionalDomainName
-            OriginAccessControlId: !Ref CloudFrontOriginAccessControl
             S3OriginConfig:
-              OriginAccessIdentity: ''
+              OriginAccessIdentity: ""
+            OriginAccessControlId: !GetAtt CloudFrontOriginAccessControl.Id
+        
         DefaultCacheBehavior:
           TargetOriginId: WebsiteBucketOrigin
           ViewerProtocolPolicy: redirect-to-https
-          AllowedMethods:
+          AllowedMethods: 
             - GET
             - HEAD
-            - OPTIONS
-          CachedMethods:
+          CachedMethods: 
             - GET
             - HEAD
-            - OPTIONS
           Compress: true
-          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+          ForwardedValues:
+            QueryString: false
+            Cookies:
+              Forward: none
+        
         CustomErrorResponses:
           - ErrorCode: 403
             ResponseCode: 200
@@ -104,15 +119,10 @@ Resources:
           - ErrorCode: 404
             ResponseCode: 200
             ResponsePagePath: /index.html
-        ViewerCertificate:
-          AcmCertificateArn: !If [UseCustomDomain, !Ref AcmCertificateArn, !Ref AWS::NoValue]
-          MinimumProtocolVersion: !If [UseCustomDomain, TLSv1.2_2021, !Ref AWS::NoValue]
-          SslSupportMethod: !If [UseCustomDomain, sni-only, !Ref AWS::NoValue]
-          CloudFrontDefaultCertificate: !If [UseCustomDomain, !Ref AWS::NoValue, true]
 
-  DnsRecordA:
-    Condition: UseCustomDomain
+  Route53RecordA:
     Type: AWS::Route53::RecordSet
+    Condition: HasDomain
     Properties:
       HostedZoneId: !Ref HostedZoneId
       Name: !Ref DomainName
@@ -121,33 +131,33 @@ Resources:
         DNSName: !GetAtt WebsiteDistribution.DomainName
         HostedZoneId: Z2FDTNDATAQYW2
 
-  DnsRecordAAAA:
-    Condition: UseCustomDomain
+  Route53RecordWWW:
     Type: AWS::Route53::RecordSet
+    Condition: HasDomain
     Properties:
       HostedZoneId: !Ref HostedZoneId
-      Name: !Ref DomainName
-      Type: AAAA
+      Name: !Sub "www.${DomainName}"
+      Type: A
       AliasTarget:
         DNSName: !GetAtt WebsiteDistribution.DomainName
         HostedZoneId: Z2FDTNDATAQYW2
 
 Outputs:
-  WebsiteBucketName:
-    Description: Name of the S3 bucket that stores the built frontend.
+  FrontendBucketName:
+    Description: "S3 Bucket name for website content"
     Value: !Ref WebsiteBucket
 
-  CloudFrontDistributionId:
-    Description: CloudFront distribution ID.
+  FrontendDistributionId:
+    Description: "CloudFront Distribution ID"
     Value: !Ref WebsiteDistribution
 
-  CloudFrontDomainName:
-    Description: CloudFront domain name.
-    Value: !GetAtt WebsiteDistribution.DomainName
-
-  SiteUrl:
-    Description: Public site URL.
+  FrontendUrl:
+    Description: "Frontend URL"
     Value: !If
-      - UseCustomDomain
-      - !Sub 'https://${DomainName}'
-      - !Sub 'https://${WebsiteDistribution.DomainName}'
+      - HasDomain
+      - !Sub "https://${DomainName}"
+      - !Sub "https://${WebsiteDistribution.DomainName}"
+
+  CloudFrontDomainName:
+    Description: "CloudFront Distribution Domain Name"
+    Value: !GetAtt WebsiteDistribution.DomainName

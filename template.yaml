@@ -59,7 +59,6 @@ Resources:
     Type: AWS::CloudFront::OriginAccessControl
     Properties:
       OriginAccessControlConfig:
-        Name: !Sub '${AWS::StackName}-oac'
         Description: Origin access control for the homepage bucket
         OriginAccessControlOriginType: s3
         SigningBehavior: always

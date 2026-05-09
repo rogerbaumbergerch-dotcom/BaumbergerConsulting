@@ -29,7 +29,7 @@ export default function Navbar() {
               <span className="text-primary-foreground font-bold text-sm">A</span>
             </div>
             <span className="font-semibold text-lg tracking-tight text-foreground">
-              Baumbeger Consulting
+              Baumberger Consulting
             </span>
           </Link>
 

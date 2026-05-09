@@ -29,7 +29,7 @@ export default function PartnerPortal() {
               <span className="text-primary-foreground font-bold">A</span>
             </div>
             <span className="font-semibold text-lg text-primary-foreground">
-              Baumbeger Consulting
+              Baumberger Consulting
             </span>
           </div>
 

@@ -43,7 +43,7 @@ export default function DashboardSidebar({ role, onRoleToggle }) {
             <span className="text-accent font-bold text-sm">A</span>
           </div>
           <span className="font-semibold text-sm text-primary-foreground">
-            Baumbeger Consulting
+            Baumberger Consulting
           </span>
         </Link>
       </div>

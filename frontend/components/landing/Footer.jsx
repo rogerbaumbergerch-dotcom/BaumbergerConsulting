@@ -13,7 +13,7 @@ export default function Footer() {
                 <span className="text-primary-foreground font-bold text-xs">A</span>
               </div>
               <span className="font-semibold text-foreground">
-                Baumbeger Consulting
+                Baumberger Consulting
               </span>
             </div>
             <p className="text-xs text-muted-foreground leading-relaxed">
@@ -55,7 +55,7 @@ export default function Footer() {
 
         <div className="border-t border-border pt-8 flex flex-col sm:flex-row justify-between items-center gap-4">
           <p className="text-[11px] text-muted-foreground">
-            © 2026 Baumbeger Consulting. All rights reserved.
+            © 2026 Baumberger Consulting. All rights reserved.
           </p>
           <Link to="/login" className="text-[11px] text-accent hover:underline underline-offset-4">
             Partner Portal Access →

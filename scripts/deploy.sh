@@ -9,6 +9,16 @@ DOMAIN_NAME="${DOMAIN_NAME:-}"
 HOSTED_ZONE_ID="${HOSTED_ZONE_ID:-}"
 ACM_CERTIFICATE_ARN="${ACM_CERTIFICATE_ARN:-}"
 
+# CloudFormation stack names may only contain letters, numbers, and hyphens.
+NORMALIZED_STACK_NAME="$(echo "$STACK_NAME" | tr '_' '-' | sed 's/[^a-zA-Z0-9-]//g')"
+if [[ -z "$NORMALIZED_STACK_NAME" ]]; then
+  NORMALIZED_STACK_NAME="homepage-static"
+fi
+if [[ ! "$NORMALIZED_STACK_NAME" =~ ^[a-zA-Z] ]]; then
+  NORMALIZED_STACK_NAME="h-$NORMALIZED_STACK_NAME"
+fi
+STACK_NAME="$NORMALIZED_STACK_NAME"
+
 if ! command -v aws >/dev/null 2>&1; then
   echo "aws cli is required" >&2
   exit 1

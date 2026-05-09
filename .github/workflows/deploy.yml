@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 env:
-  STACK_NAME: homepage-consulting-stack
+  STACK_NAME_RAW: ${{ vars.STACK_NAME }}
 
 jobs:
   deploy:
@@ -42,6 +42,23 @@ jobs:
           aws-region: ${{ secrets.AWS_REGION }}
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           role-session-name: github-actions-homepage-deploy
+
+      - name: Normalize stack name
+        run: |
+          CANDIDATE="${STACK_NAME_RAW:-homepage-static}"
+          # CloudFormation stack names may only contain letters, numbers, and hyphens.
+          NORMALIZED="$(echo "$CANDIDATE" | tr '_' '-' | sed 's/[^a-zA-Z0-9-]//g')"
+
+          if [[ -z "$NORMALIZED" ]]; then
+            NORMALIZED="homepage-static"
+          fi
+
+          if [[ ! "$NORMALIZED" =~ ^[a-zA-Z] ]]; then
+            NORMALIZED="h-$NORMALIZED"
+          fi
+
+          echo "STACK_NAME=$NORMALIZED" >> "$GITHUB_ENV"
+          echo "Using stack name: $NORMALIZED"
 
       - name: Delete existing stack
         run: |

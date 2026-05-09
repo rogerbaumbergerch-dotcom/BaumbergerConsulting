@@ -39,11 +39,37 @@ jobs:
         working-directory: frontend
         run: npm run build
 
-      - name: Configure AWS credentials
+      - name: Validate AWS deploy role configuration
+        shell: bash
+        run: |
+          if [ -z "${AWS_DEPLOY_ROLE_ARN}" ]; then
+            echo "AWS_DEPLOY_ROLE_ARN is not set."
+            echo "Set repository variable 'AWS_DEPLOY_ROLE_ARN' (recommended) or repository secret 'AWS_DEPLOY_ROLE_ARN'."
+            exit 1
+          fi
+
+      - name: Show OIDC trust context
+        shell: bash
+        run: |
+          echo "Repository: ${GITHUB_REPOSITORY}"
+          echo "Ref: ${GITHUB_REF}"
+          echo "Expected OIDC sub claim: repo:${GITHUB_REPOSITORY}:ref:${GITHUB_REF}"
+
+      - name: Guard manual deploy branch
+        if: github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main'
+        shell: bash
+        run: |
+          echo "Manual deploy must run from refs/heads/main with current IAM trust policy."
+          echo "Current ref: ${GITHUB_REF}"
+          echo "Either run this workflow on main or update the IAM role trust policy sub condition."
+          exit 1
+
+      - name: Configure AWS credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ env.AWS_DEPLOY_ROLE_ARN }}
+          role-session-name: github-actions-offerten-deploy
 
       - name: Deploy CloudFormation stack
         if: github.event_name == 'push'

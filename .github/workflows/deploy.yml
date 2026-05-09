@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 env:
-  STACK_NAME: homepage-static
+  STACK_NAME: homepage_consulting_stack
 
 jobs:
   deploy:

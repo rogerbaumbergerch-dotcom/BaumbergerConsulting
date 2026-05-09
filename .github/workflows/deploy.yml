@@ -45,12 +45,38 @@ jobs:
 
       - name: Delete existing stack
         run: |
+          STATUS=$(aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --region "${{ secrets.AWS_REGION }}" \
+            --query "Stacks[0].StackStatus" \
+            --output text 2>/dev/null || echo "NOT_FOUND")
+
+          if [[ "$STATUS" == "NOT_FOUND" ]]; then
+            echo "Stack does not exist. Skipping delete."
+            exit 0
+          fi
+
+          BUCKET=$(aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --region "${{ secrets.AWS_REGION }}" \
+            --query "Stacks[0].Outputs[?OutputKey=='WebsiteBucketName'].OutputValue" \
+            --output text 2>/dev/null || true)
+
+          if [[ -n "$BUCKET" && "$BUCKET" != "None" ]]; then
+            echo "Emptying S3 bucket before stack delete: $BUCKET"
+            aws s3 rm "s3://$BUCKET" --recursive || true
+          fi
+
+          echo "Deleting stack: $STACK_NAME (status: $STATUS)"
           aws cloudformation delete-stack \
             --stack-name "$STACK_NAME" \
-            --region "${{ secrets.AWS_REGION }}" 2>/dev/null || true
+            --region "${{ secrets.AWS_REGION }}"
+
           aws cloudformation wait stack-delete-complete \
             --stack-name "$STACK_NAME" \
-            --region "${{ secrets.AWS_REGION }}" 2>/dev/null || true
+            --region "${{ secrets.AWS_REGION }}"
+
+          echo "Stack deleted successfully."
 
       - name: Deploy CloudFormation stack
         run: |
@@ -70,6 +96,16 @@ jobs:
           [[ ${#PARAMETER_OVERRIDES[@]} -gt 0 ]] && ARGS+=(--parameter-overrides "${PARAMETER_OVERRIDES[@]}")
 
           aws "${ARGS[@]}"
+
+      - name: Show CloudFormation events on failure
+        if: failure()
+        run: |
+          aws cloudformation describe-stack-events \
+            --stack-name "$STACK_NAME" \
+            --region "${{ secrets.AWS_REGION }}" \
+            --max-items 40 \
+            --query "StackEvents[].{Time:Timestamp,Status:ResourceStatus,Type:ResourceType,LogicalId:LogicalResourceId,Reason:ResourceStatusReason}" \
+            --output table || true
 
       - name: Get stack outputs
         id: cf

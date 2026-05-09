@@ -43,25 +43,14 @@ jobs:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           role-session-name: github-actions-homepage-deploy
 
-      - name: Delete stack if in ROLLBACK_COMPLETE state
+      - name: Delete existing stack
         run: |
-          STATUS=$(aws cloudformation describe-stacks \
+          aws cloudformation delete-stack \
             --stack-name "$STACK_NAME" \
-            --region "${{ secrets.AWS_REGION }}" \
-            --query "Stacks[0].StackStatus" \
-            --output text 2>/dev/null || echo "DOES_NOT_EXIST")
-          if [[ "$STATUS" == "ROLLBACK_COMPLETE" ]]; then
-            echo "Stack is in ROLLBACK_COMPLETE state. Deleting before redeploy..."
-            aws cloudformation delete-stack \
-              --stack-name "$STACK_NAME" \
-              --region "${{ secrets.AWS_REGION }}"
-            aws cloudformation wait stack-delete-complete \
-              --stack-name "$STACK_NAME" \
-              --region "${{ secrets.AWS_REGION }}"
-            echo "Stack deleted."
-          else
-            echo "Stack status: $STATUS — no cleanup needed."
-          fi
+            --region "${{ secrets.AWS_REGION }}" 2>/dev/null || true
+          aws cloudformation wait stack-delete-complete \
+            --stack-name "$STACK_NAME" \
+            --region "${{ secrets.AWS_REGION }}" 2>/dev/null || true
 
       - name: Deploy CloudFormation stack
         run: |

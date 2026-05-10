@@ -29,6 +29,33 @@ if ! command -v npm >/dev/null 2>&1; then
   exit 1
 fi
 
+wait_for_stack_not_in_progress() {
+  local stack_name="$1"
+  local region="$2"
+
+  if ! aws cloudformation describe-stacks --stack-name "$stack_name" --region "$region" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  while true; do
+    local current_status
+    current_status="$(aws cloudformation describe-stacks \
+      --stack-name "$stack_name" \
+      --region "$region" \
+      --query 'Stacks[0].StackStatus' \
+      --output text)"
+
+    if [[ "$current_status" == *_IN_PROGRESS ]]; then
+      echo "CloudFormation stack operation in progress ($current_status), waiting 20s..."
+      sleep 20
+      continue
+    fi
+
+    echo "CloudFormation stack status is stable: $current_status"
+    return 0
+  done
+}
+
 cd "$FRONTEND_DIR"
 npm run build
 
@@ -57,6 +84,8 @@ if [[ ${#PARAMETER_OVERRIDES[@]} -gt 0 ]]; then
   DEPLOY_ARGS+=(--parameter-overrides)
   DEPLOY_ARGS+=("${PARAMETER_OVERRIDES[@]}")
 fi
+
+wait_for_stack_not_in_progress "$STACK_NAME" "$AWS_REGION"
 
 aws "${DEPLOY_ARGS[@]}"
 

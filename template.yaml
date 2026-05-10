@@ -1,169 +1,158 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: 'Static hosting with automatic Route 53 DNS management'
+Description: 'Static website hosting with S3, CloudFront, and automatic DNS management'
 
 Parameters:
   DomainName:
     Type: String
-    Default: "baum-berger.com"
-    Description: "Your domain name"
-    
+    Description: Domain name for the website
+    Default: baum-berger.com
+  
   HostedZoneId:
     Type: String
-    Default: "Z0611219TTZX7YDE3WFE"
-    Description: "Route 53 Hosted Zone ID"
-    
+    Description: Route 53 Hosted Zone ID
+    Default: Z0611219TTZX7YDE3WFE
+  
   AcmCertificateArn:
     Type: String
-    Default: "arn:aws:acm:us-east-1:980815102020:certificate/ff880a23-96c9-475e-8346-0121e84e2604"
-    Description: "ACM Certificate ARN"
-
-Conditions:
-  HasDomain: !And
-    - !Not [!Equals [!Ref DomainName, ""]]
-    - !Not [!Equals [!Ref HostedZoneId, ""]]
-    - !Not [!Equals [!Ref AcmCertificateArn, ""]]
+    Description: ACM Certificate ARN for SSL/TLS
+    Default: arn:aws:acm:us-east-1:980815102020:certificate/ff880a23-96c9-475e-8346-0121e84e2604
 
 Resources:
-  CloudFrontOriginAccessControl:
-    Type: AWS::CloudFront::OriginAccessControl
-    Properties:
-      OriginAccessControlConfig:
-        Name: !Sub "${AWS::StackName}-oac-${AWS::AccountId}"
-        Description: !Sub "OAC for ${AWS::StackName}"
-        OriginAccessControlOriginType: s3
-        SigningBehavior: always
-        SigningProtocol: sigv4
-
-  WebsiteBucket:
+  # S3 Bucket for website content
+  FrontendBucket:
     Type: AWS::S3::Bucket
     Properties:
-      BucketName: !Sub "${AWS::StackName}-website-${AWS::AccountId}"
+      BucketName: !Sub "${DomainName}-frontend-${AWS::AccountId}"
       PublicAccessBlockConfiguration:
-        BlockPublicAcls: true
-        BlockPublicPolicy: true
-        IgnorePublicAcls: true
-        RestrictPublicBuckets: true
+        BlockPublicAcls: false
+        BlockPublicPolicy: false
+        IgnorePublicAcls: false
+        RestrictPublicBuckets: false
+      WebsiteConfiguration:
+        IndexDocument: index.html
+        ErrorDocument: error.html
+      VersioningConfiguration:
+        Status: Enabled
       BucketEncryption:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
               SSEAlgorithm: AES256
-    DeletionPolicy: Retain
 
-  WebsiteBucketPolicy:
+  # S3 Bucket Policy for CloudFront access
+  FrontendBucketPolicy:
     Type: AWS::S3::BucketPolicy
     Properties:
-      Bucket: !Ref WebsiteBucket
+      Bucket: !Ref FrontendBucket
       PolicyDocument:
-        Version: '2012-10-17'
         Statement:
           - Sid: AllowCloudFrontServicePrincipal
             Effect: Allow
             Principal:
               Service: cloudfront.amazonaws.com
             Action: s3:GetObject
-            Resource: !Sub "${WebsiteBucket}/*"
+            Resource: !Sub "${FrontendBucket.Arn}/*"
             Condition:
               StringEquals:
-                'AWS:SourceArn': !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${WebsiteDistribution}"
+                AWS:SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${FrontendDistribution}"
 
-  WebsiteDistribution:
+  # Origin Access Control for CloudFront
+  OriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "${DomainName}-OAC"
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  # CloudFront Distribution
+  FrontendDistribution:
     Type: AWS::CloudFront::Distribution
     Properties:
       DistributionConfig:
-        Comment: !Sub "${AWS::StackName} static website"
+        Aliases:
+          - !Ref DomainName
+          - !Sub "www.${DomainName}"
+        DefaultCacheBehavior:
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6  # Managed-CachingOptimized
+          OriginRequestPolicyId: 88a5eaf4-2fd4-4709-b370-b4c650ea3fcf  # Managed-CORS-S3Origin
+          ResponseHeadersPolicyId: 67f7725c-6f97-4210-82d7-5512b31e9d03  # Managed-SecurityHeadersPolicy
+          Compress: true
         DefaultRootObject: index.html
-        Enabled: true  # Direkt enabled
-        HttpVersion: http2and3
+        Enabled: true
+        HttpVersion: http2
         IPV6Enabled: true
-        PriceClass: PriceClass_100
-        
-        Aliases: !If
-          - HasDomain
-          - - !Ref DomainName
-            - !Sub "www.${DomainName}"
-          - !Ref "AWS::NoValue"
-        
-        ViewerCertificate: !If
-          - HasDomain
-          - AcmCertificateArn: !Ref AcmCertificateArn
-            SslSupportMethod: sni-only
-            MinimumProtocolVersion: TLSv1.2_2021
-          - CloudFrontDefaultCertificate: true
-        
         Origins:
-          - Id: WebsiteBucketOrigin
-            DomainName: !GetAtt WebsiteBucket.RegionalDomainName
+          - Id: S3Origin
+            DomainName: !GetAtt FrontendBucket.RegionalDomainName
             S3OriginConfig:
               OriginAccessIdentity: ""
-            OriginAccessControlId: !GetAtt CloudFrontOriginAccessControl.Id
-        
-        DefaultCacheBehavior:
-          TargetOriginId: WebsiteBucketOrigin
-          ViewerProtocolPolicy: redirect-to-https
-          AllowedMethods: 
-            - GET
-            - HEAD
-          CachedMethods: 
-            - GET
-            - HEAD
-          Compress: true
-          ForwardedValues:
-            QueryString: false
-            Cookies:
-              Forward: none
-        
+            OriginAccessControlId: !Ref OriginAccessControl
+        PriceClass: PriceClass_100
+        ViewerCertificate:
+          AcmCertificateArn: !Ref AcmCertificateArn
+          SslSupportMethod: sni-only
+          MinimumProtocolVersion: TLSv1.2_2021
         CustomErrorResponses:
           - ErrorCode: 403
             ResponseCode: 200
             ResponsePagePath: /index.html
+            ErrorCachingMinTTL: 300
           - ErrorCode: 404
             ResponseCode: 200
             ResponsePagePath: /index.html
+            ErrorCachingMinTTL: 300
 
-  # AUTOMATISCHE Route 53 DNS Records
-  Route53RecordA:
-    Type: AWS::Route53::RecordSet
-    Condition: HasDomain
+  # Route 53 Records for automatic DNS management
+  DNSRecords:
+    Type: AWS::Route53::RecordSetGroup
     Properties:
       HostedZoneId: !Ref HostedZoneId
-      Name: !Ref DomainName
-      Type: A
-      AliasTarget:
-        DNSName: !GetAtt WebsiteDistribution.DomainName
-        HostedZoneId: Z2FDTNDATAQYW2
-
-  Route53RecordWWW:
-    Type: AWS::Route53::RecordSet
-    Condition: HasDomain
-    Properties:
-      HostedZoneId: !Ref HostedZoneId
-      Name: !Sub "www.${DomainName}"
-      Type: A
-      AliasTarget:
-        DNSName: !GetAtt WebsiteDistribution.DomainName
-        HostedZoneId: Z2FDTNDATAQYW2
+      RecordSets:
+        # Root domain A record
+        - Name: !Ref DomainName
+          Type: A
+          AliasTarget:
+            DNSName: !GetAtt FrontendDistribution.DomainName
+            HostedZoneId: Z2FDTNDATAQYW2  # CloudFront hosted zone ID
+            EvaluateTargetHealth: false
+        # WWW subdomain A record
+        - Name: !Sub "www.${DomainName}"
+          Type: A
+          AliasTarget:
+            DNSName: !GetAtt FrontendDistribution.DomainName
+            HostedZoneId: Z2FDTNDATAQYW2  # CloudFront hosted zone ID
+            EvaluateTargetHealth: false
 
 Outputs:
   FrontendBucketName:
-    Description: "S3 Bucket name for website content"
-    Value: !Ref WebsiteBucket
+    Description: Name of the S3 bucket for frontend
+    Value: !Ref FrontendBucket
+    Export:
+      Name: !Sub "${AWS::StackName}-FrontendBucket"
 
   FrontendDistributionId:
-    Description: "CloudFront Distribution ID"
-    Value: !Ref WebsiteDistribution
+    Description: CloudFront Distribution ID
+    Value: !Ref FrontendDistribution
+    Export:
+      Name: !Sub "${AWS::StackName}-DistributionId"
 
   FrontendUrl:
-    Description: "Frontend URL"
-    Value: !If
-      - HasDomain
-      - !Sub "https://${DomainName}"
-      - !Sub "https://${WebsiteDistribution.DomainName}"
+    Description: Frontend URL
+    Value: !Sub "https://${DomainName}"
+    Export:
+      Name: !Sub "${AWS::StackName}-FrontendUrl"
 
   CloudFrontDomainName:
-    Description: "CloudFront Distribution Domain Name"
-    Value: !GetAtt WebsiteDistribution.DomainName
+    Description: CloudFront Distribution Domain Name
+    Value: !GetAtt FrontendDistribution.DomainName
+    Export:
+      Name: !Sub "${AWS::StackName}-CloudFrontDomain"
 
-  Route53RecordsUpdated:
-    Description: "Route 53 DNS Records Status"
-    Condition: HasDomain
-    Value: !Sub "DNS automatically updated for ${DomainName} and www.${DomainName}"
+  FrontendBucketWebsiteURL:
+    Description: S3 bucket website URL
+    Value: !GetAtt FrontendBucket.WebsiteURL
+    Export:
+      Name: !Sub "${AWS::StackName}-BucketWebsiteURL"

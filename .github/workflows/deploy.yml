@@ -37,9 +37,37 @@ jobs:
         shell: bash
         run: |
           echo "🔍 Checking existing infrastructure..."
+
+          wait_for_stack_not_in_progress() {
+            local stack_name="$1"
+            local region="$2"
+
+            while true; do
+              local current_status
+              current_status=$(aws cloudformation describe-stacks \
+                --stack-name "${stack_name}" \
+                --region "${region}" \
+                --query 'Stacks[0].StackStatus' \
+                --output text 2>/dev/null || echo "STACK_DOES_NOT_EXIST")
+
+              if [[ "${current_status}" == "STACK_DOES_NOT_EXIST" ]]; then
+                return 0
+              fi
+
+              if [[ "${current_status}" == *_IN_PROGRESS ]]; then
+                echo "⏳ Stack operation still in progress (${current_status}), waiting 20s..."
+                sleep 20
+                continue
+              fi
+
+              echo "ℹ️ Stack is stable in status: ${current_status}"
+              return 0
+            done
+          }
           
           # Check if stack exists
           if aws cloudformation describe-stacks --stack-name "${STACK_NAME}" --region "${AWS_REGION}" >/dev/null 2>&1; then
+            wait_for_stack_not_in_progress "${STACK_NAME}" "${AWS_REGION}"
             STACK_STATUS=$(aws cloudformation describe-stacks --stack-name "${STACK_NAME}" --region "${AWS_REGION}" --query 'Stacks[0].StackStatus' --output text)
             echo "📋 Current stack status: $STACK_STATUS"
             
@@ -87,6 +115,35 @@ jobs:
         shell: bash
         run: |
           echo "🚀 Deploying CloudFormation stack with automatic DNS management..."
+
+          wait_for_stack_not_in_progress() {
+            local stack_name="$1"
+            local region="$2"
+
+            if ! aws cloudformation describe-stacks --stack-name "${stack_name}" --region "${region}" >/dev/null 2>&1; then
+              return 0
+            fi
+
+            while true; do
+              local current_status
+              current_status=$(aws cloudformation describe-stacks \
+                --stack-name "${stack_name}" \
+                --region "${region}" \
+                --query 'Stacks[0].StackStatus' \
+                --output text)
+
+              if [[ "${current_status}" == *_IN_PROGRESS ]]; then
+                echo "⏳ Stack operation still in progress (${current_status}), waiting 20s..."
+                sleep 20
+                continue
+              fi
+
+              echo "ℹ️ Stack is ready for deployment in status: ${current_status}"
+              return 0
+            done
+          }
+
+          wait_for_stack_not_in_progress "${STACK_NAME}" "${AWS_REGION}"
           
           aws cloudformation deploy \
             --stack-name "${STACK_NAME}" \

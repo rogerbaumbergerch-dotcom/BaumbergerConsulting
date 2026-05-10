@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: 'Static website hosting with S3, CloudFront, and automatic DNS management'
+Description: 'Fully automated static website hosting with conflict resolution'
 
 Parameters:
   DomainName:
@@ -18,11 +18,162 @@ Parameters:
     Default: arn:aws:acm:us-east-1:980815102020:certificate/ff880a23-96c9-475e-8346-0121e84e2604
 
 Resources:
+  # IAM Role for Lambda cleanup function
+  CleanupLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: CloudFrontAndRoute53Cleanup
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - cloudfront:ListDistributions
+                  - cloudfront:GetDistribution
+                  - cloudfront:GetDistributionConfig
+                  - cloudfront:UpdateDistribution
+                  - cloudfront:DeleteDistribution
+                  - route53:ListResourceRecordSets
+                  - route53:ChangeResourceRecordSets
+                  - route53:GetChange
+                Resource: '*'
+
+  # Lambda function for automatic cleanup
+  CleanupLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-auto-cleanup"
+      Runtime: python3.9
+      Handler: index.handler
+      Role: !GetAtt CleanupLambdaRole.Arn
+      Timeout: 900
+      Code:
+        ZipFile: |
+          import boto3
+          import json
+          import time
+          import cfnresponse
+          
+          def handler(event, context):
+              try:
+                  cloudfront = boto3.client('cloudfront')
+                  route53 = boto3.client('route53')
+                  domain_name = event['ResourceProperties']['DomainName']
+                  hosted_zone_id = event['ResourceProperties']['HostedZoneId']
+                  stack_name = event['ResourceProperties']['StackName']
+                  
+                  print(f"Processing domain: {domain_name}")
+                  
+                  if event['RequestType'] in ['Create', 'Update']:
+                      # Step 1: Clean up existing CloudFront distributions
+                      print("Step 1: Cleaning up existing CloudFront distributions...")
+                      response = cloudfront.list_distributions()
+                      
+                      for dist in response.get('DistributionList', {}).get('Items', []):
+                          aliases = dist.get('Aliases', {}).get('Items', [])
+                          if domain_name in aliases or f"www.{domain_name}" in aliases:
+                              dist_id = dist['Id']
+                              
+                              # Skip if this is our own distribution (check tags or description)
+                              try:
+                                  dist_response = cloudfront.get_distribution(Id=dist_id)
+                                  # If distribution was created by this stack, skip it
+                                  if stack_name in str(dist_response.get('Distribution', {})):
+                                      continue
+                              except:
+                                  pass
+                              
+                              print(f"Found conflicting distribution: {dist_id}")
+                              
+                              # Get current config
+                              dist_response = cloudfront.get_distribution(Id=dist_id)
+                              config = dist_response['Distribution']['DistributionConfig']
+                              etag = dist_response['ETag']
+                              
+                              # Remove aliases to avoid conflict
+                              if config.get('Aliases', {}).get('Items'):
+                                  config['Aliases'] = {'Quantity': 0, 'Items': []}
+                                  
+                                  print(f"Removing aliases from distribution: {dist_id}")
+                                  cloudfront.update_distribution(
+                                      Id=dist_id,
+                                      DistributionConfig=config,
+                                      IfMatch=etag
+                                  )
+                                  
+                                  # Wait for deployment
+                                  print(f"Waiting for distribution {dist_id} to deploy...")
+                                  waiter = cloudfront.get_waiter('distribution_deployed')
+                                  waiter.wait(Id=dist_id, WaiterConfig={'Delay': 30, 'MaxAttempts': 20})
+                      
+                      # Step 2: Clean up existing Route 53 records
+                      print("Step 2: Cleaning up existing Route 53 records...")
+                      try:
+                          records_response = route53.list_resource_record_sets(HostedZoneId=hosted_zone_id)
+                          
+                          changes = []
+                          for record in records_response['ResourceRecordSets']:
+                              if record['Name'].rstrip('.') in [domain_name, f"www.{domain_name}"]:
+                                  if record['Type'] == 'A' and 'AliasTarget' in record:
+                                      # Check if it's pointing to CloudFront
+                                      if 'cloudfront.net' in record['AliasTarget']['DNSName']:
+                                          changes.append({
+                                              'Action': 'DELETE',
+                                              'ResourceRecordSet': record
+                                          })
+                          
+                          if changes:
+                              print(f"Deleting {len(changes)} existing DNS records...")
+                              route53.change_resource_record_sets(
+                                  HostedZoneId=hosted_zone_id,
+                                  ChangeBatch={'Changes': changes}
+                              )
+                              
+                              # Wait for changes to propagate
+                              time.sleep(30)
+                      
+                      except Exception as e:
+                          print(f"Route53 cleanup warning: {str(e)}")
+                  
+                  elif event['RequestType'] == 'Delete':
+                      print("Cleanup on stack deletion - no action needed")
+                  
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {
+                      'Message': f'Cleanup completed for {domain_name}'
+                  })
+                  
+              except Exception as e:
+                  print(f"Error during cleanup: {str(e)}")
+                  # Don't fail the stack for cleanup issues
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {
+                      'Message': f'Cleanup completed with warnings: {str(e)}'
+                  })
+
+  # Custom resource to trigger cleanup
+  AutoCleanup:
+    Type: AWS::CloudFormation::CustomResource
+    Properties:
+      ServiceToken: !GetAtt CleanupLambda.Arn
+      DomainName: !Ref DomainName
+      HostedZoneId: !Ref HostedZoneId
+      StackName: !Ref AWS::StackName
+
   # S3 Bucket for website content
   FrontendBucket:
     Type: AWS::S3::Bucket
+    DependsOn: AutoCleanup
     Properties:
-      BucketName: !Sub "${DomainName}-frontend-${AWS::AccountId}"
+      BucketName: !Sub "${DomainName}-frontend-${AWS::AccountId}-${AWS::StackName}"
       PublicAccessBlockConfiguration:
         BlockPublicAcls: false
         BlockPublicPolicy: false
@@ -38,36 +189,24 @@ Resources:
           - ServerSideEncryptionByDefault:
               SSEAlgorithm: AES256
 
-  # S3 Bucket Policy for CloudFront access
-  FrontendBucketPolicy:
-    Type: AWS::S3::BucketPolicy
-    Properties:
-      Bucket: !Ref FrontendBucket
-      PolicyDocument:
-        Statement:
-          - Sid: AllowCloudFrontServicePrincipal
-            Effect: Allow
-            Principal:
-              Service: cloudfront.amazonaws.com
-            Action: s3:GetObject
-            Resource: !Sub "${FrontendBucket.Arn}/*"
-            Condition:
-              StringEquals:
-                AWS:SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${FrontendDistribution}"
-
   # Origin Access Control for CloudFront
   OriginAccessControl:
     Type: AWS::CloudFront::OriginAccessControl
+    DependsOn: AutoCleanup
     Properties:
       OriginAccessControlConfig:
-        Name: !Sub "${DomainName}-OAC"
+        Name: !Sub "${DomainName}-OAC-${AWS::StackName}"
         OriginAccessControlOriginType: s3
         SigningBehavior: always
         SigningProtocol: sigv4
 
-  # CloudFront Distribution
+  # CloudFront Distribution with automatic domain assignment
   FrontendDistribution:
     Type: AWS::CloudFront::Distribution
+    DependsOn: 
+      - AutoCleanup
+      - FrontendBucket
+      - OriginAccessControl
     Properties:
       DistributionConfig:
         Aliases:
@@ -104,10 +243,30 @@ Resources:
             ResponseCode: 200
             ResponsePagePath: /index.html
             ErrorCachingMinTTL: 300
+        Comment: !Sub "Auto-managed distribution for ${DomainName} - ${AWS::StackName}"
+
+  # S3 Bucket Policy for CloudFront access
+  FrontendBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    DependsOn: FrontendDistribution
+    Properties:
+      Bucket: !Ref FrontendBucket
+      PolicyDocument:
+        Statement:
+          - Sid: AllowCloudFrontServicePrincipal
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub "${FrontendBucket.Arn}/*"
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${FrontendDistribution}"
 
   # Route 53 Records for automatic DNS management
   DNSRecords:
     Type: AWS::Route53::RecordSetGroup
+    DependsOn: FrontendDistribution
     Properties:
       HostedZoneId: !Ref HostedZoneId
       RecordSets:
@@ -144,6 +303,12 @@ Outputs:
     Value: !Sub "https://${DomainName}"
     Export:
       Name: !Sub "${AWS::StackName}-FrontendUrl"
+
+  WwwUrl:
+    Description: WWW Frontend URL
+    Value: !Sub "https://www.${DomainName}"
+    Export:
+      Name: !Sub "${AWS::StackName}-WwwUrl"
 
   CloudFrontDomainName:
     Description: CloudFront Distribution Domain Name

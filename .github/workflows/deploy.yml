@@ -196,6 +196,38 @@ jobs:
 
           echo "✅ Verification completed!"
 
+      - name: Wait for DNS propagation
+        shell: bash
+        run: |
+          echo "🌐 Waiting for DNS propagation..."
+
+          domain_ready=false
+          www_ready=false
+
+          for i in {1..10}; do
+            # Root domain may resolve directly to A/AAAA records when using Route53 alias.
+            if dig +short "${DOMAIN_NAME}" | grep -q .; then
+              domain_ready=true
+            fi
+
+            # WWW is usually a CNAME to CloudFront in this setup.
+            if dig +short "www.${DOMAIN_NAME}" | grep -q "cloudfront"; then
+              www_ready=true
+            fi
+
+            if [[ "${domain_ready}" == "true" && "${www_ready}" == "true" ]]; then
+              echo "✅ DNS propagation completed!"
+              break
+            fi
+
+            echo "⏳ Waiting for DNS... (attempt $i/10)"
+            sleep 30
+          done
+
+          echo "🎉 Website should be live at:"
+          echo "   https://${DOMAIN_NAME}"
+          echo "   https://www.${DOMAIN_NAME}"
+
       - name: Deploy frontend content
         shell: bash
         run: |

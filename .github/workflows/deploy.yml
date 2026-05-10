@@ -243,54 +243,17 @@ jobs:
             --query "Stacks[0].Outputs[?OutputKey=='FrontendDistributionId'].OutputValue" \
             --output text)
 
-          # Create sample content
-          mkdir -p dist
-          cat > dist/index.html << 'EOF'
-          <!DOCTYPE html>
-          <html lang="de">
-          <head>
-              <meta charset="UTF-8">
-              <meta name="viewport" content="width=device-width, initial-scale=1.0">
-              <title>Baum Berger - Gartenbau</title>
-              <style>
-                  body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; }
-                  .container { max-width: 800px; margin: 0 auto; background: white; padding: 40px; border-radius: 15px; box-shadow: 0 10px 30px rgba(0,0,0,0.2); }
-                  h1 { color: #2c5530; text-align: center; margin-bottom: 30px; }
-                  .status { background: #d4edda; color: #155724; padding: 20px; border-radius: 10px; margin: 20px 0; border-left: 5px solid #28a745; }
-                  .info { background: #e7f3ff; color: #004085; padding: 15px; border-radius: 8px; margin: 15px 0; }
-                  .highlight { background: #fff3cd; color: #856404; padding: 10px; border-radius: 5px; margin: 10px 0; }
-              </style>
-          </head>
-          <body>
-              <div class="container">
-                  <h1>🌳 Baumberger </h1>
-                  <div class="status">
-                      ✅ Website erfolgreich deployed!<br>
-                      🚀 CloudFront Distribution automatisch aktiviert<br>
-                      🔒 SSL-Zertifikat automatisch konfiguriert<br>
-                      🌐 DNS Records automatisch aktualisiert<br>
-                      ⚡ Route 53 zeigt auf neue CloudFront Distribution
-                  </div>
-                  <div class="info">
-                      <strong>🎯 Vollständige Automatisierung:</strong><br>
-                      • CloudFormation Stack Management<br>
-                      • CloudFront Distribution Lifecycle<br>
-                      • Route 53 DNS Automatisierung<br>
-                      • SSL/TLS Zertifikat Integration
-                  </div>
-                  <div class="highlight">
-                      <strong>🚀 Deployment Zeit:</strong> $(date)<br>
-                      <strong>🌍 Region:</strong> ${AWS_REGION}<br>
-                      <strong>📋 Stack:</strong> ${STACK_NAME}
-                  </div>
-                  <p><strong>Willkommen bei Baum Berger</strong> - Ihrem Partner für professionelle Websites mit vollautomatisierter Cloud-Infrastruktur!</p>
-              </div>
-          </body>
-          </html>
-          EOF
+          echo "🛠️ Installing frontend dependencies..."
+          npm ci --prefix frontend
+
+          echo "🏗️ Building frontend application..."
+          npm run build --prefix frontend
+
+          # Keep error.html available for direct S3 website endpoint fallbacks.
+          cp frontend/dist/index.html frontend/dist/error.html
 
           # Deploy to S3
-          aws s3 sync dist/ "s3://${BUCKET}" --delete
+          aws s3 sync frontend/dist/ "s3://${BUCKET}" --delete
 
           # Invalidate CloudFront cache
           aws cloudfront create-invalidation \
